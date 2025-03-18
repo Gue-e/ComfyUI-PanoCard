@@ -1,0 +1,2 @@
+pyequilib
+opencv-python-headless
