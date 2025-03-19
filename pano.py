@@ -184,12 +184,12 @@ class PanoViewer:
         return {"ui": {"pano_image": self.saved_pano}}  
 
 class PANO_PIPE:
-    def __init__(self, sides, scale, fov, angle, exponent, width, height, scale_up, scale_down, blue, alpha):
+    def __init__(self, sides, scale, fov, angle, depolar, width, height, scale_up, scale_down, blue, alpha):
         self.sides = sides
         self.scale = scale
         self.fov = fov
         self.angle = angle
-        self.exponent = exponent
+        self.depolar = depolar
         self.width = width
         self.height = height
         self.scale_up = scale_up
@@ -213,7 +213,7 @@ class PanoImagePipe:
                     "step": 8
                 }),
                 "width": ("INT", {
-                    "default": 0,
+                    "default": 1024,
                     "min": 0,
                     "step": 8
                 }),
@@ -223,16 +223,16 @@ class PanoImagePipe:
                     "min": -90.0,
                     "step": 0.1
                 }),
+                "depolar": ("FLOAT", {
+                    "default": 1.2,
+                    "max": 20.0,
+                    "min": 0.5,
+                    "step": 0.01
+                }),
                 "scale": ("FLOAT", {
                     "default": 1.0,
                     "max": 1.0,
                     "min": 0.1,
-                    "step": 0.01
-                }),
-                "exponent": ("FLOAT", {
-                    "default": 1.2,
-                    "max": 20.0,
-                    "min": 0.5,
                     "step": 0.01
                 }),
                 "scale_up": ("FLOAT", {
@@ -255,8 +255,8 @@ class PanoImagePipe:
 
     def switch(self, 
                sides, height, width,
-               fov, scale, 
-               exponent, scale_up, scale_down):
+               fov, depolar, scale, 
+               scale_up, scale_down):
   
         #单个卡片透视到等距圆柱体上的扭曲幅度
         cfov = (90.0, 85.0, 80.0, 70.0, 63.0, 52.0, 49.0, 45.0, 40.0, 35.0)
@@ -278,16 +278,16 @@ class PanoImagePipe:
         if fov <= 0.01:
             fov = 0.0
         
-        #极轴扭曲exponent使用默认扭曲参数
-        if exponent <= 0.01:
-            exponent = 1.2
+        #极轴扭曲depolar使用默认扭曲参数
+        if depolar <= 0.01:
+            depolar = 1.2
 
         pano_pipe = {
             "sides": sides,
             "scale": scale,
             "fov": fov,
             "angle": 0.0,
-            "exponent": exponent,
+            "depolar": depolar,
             "width": width,
             "height": height,
             "scale_up": scale_up,
@@ -331,18 +331,18 @@ class PanoImageHeightPad:
             }
         }
 
-    RETURN_TYPES = ("PANO_PIPE", "IMAGE", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("pano_pipe", "image_pad", "image_up", "image_down")
+    RETURN_TYPES = ("PANO_PIPE", "IMAGE", "MASK")
+    RETURN_NAMES = ("pano_pipe", "equ", "mask")
     FUNCTION = "node"
 
     def node(self, 
              pano_pipe,
-             Image_pad=None,
+             image_pad=None,
              image_up=None,
              image_down=None
              ):
         
-        exponent = pano_pipe.get('exponent')
+        depolar = pano_pipe.get('depolar')
         height = pano_pipe.get('height')
         width = pano_pipe.get('width')
         sides = pano_pipe.get('sides')
@@ -353,34 +353,33 @@ class PanoImageHeightPad:
         # 遮罩从中间填充指定高度的遮罩
         def modify_mask(mask, up_len, down_len):
             B, H, W = mask.shape
-
             half_height = H // 2
-
+            new_mask = torch.zeros_like(mask)
             # 处理 up_len 为 0 的情况
             if up_len == 0:
                 up_mask = mask[:, :half_height, :]
-                up_fill = torch.zeros((B, 0, W))  # 创建一个空的张量
+                new_mask[:, :half_height, :] = up_mask
             else:
-                up_mask = mask[:, up_len:half_height, :]
-                up_fill = torch.ones((B, up_len, W))
+                if up_len > 0:
+                    up_mask = mask[:, up_len:half_height+up_len, :]
+                    new_mask[:, :half_height, :] = up_mask
+                else:
+                    up_mask = mask[:, :half_height+up_len, :] 
+                    new_mask[:, -up_len:half_height, :] = up_mask
 
             # 处理 down_len 为 0 的情况
             if down_len == 0:
                 down_mask = mask[:, half_height:, :]
-                down_fill = torch.zeros((B, 0, W))  # 创建一个空的张量
+                new_mask[:, half_height:, :] = down_mask
             else:
-                down_mask = mask[:, half_height:H-down_len, :]
-                down_fill = torch.ones((B, down_len, W))
-
-            # 构建新的 mask
-            new_mask = torch.cat([
-                up_mask,
-                up_fill,
-                down_fill,
-                down_mask,
-            ], dim=1)
-
+                if down_len > 0:
+                    down_mask = mask[:, half_height-down_len:H-down_len, :]
+                    new_mask[:, half_height:, :] = down_mask
+                else:
+                    down_mask = mask[:, half_height-down_len:, :]
+                    new_mask[:, half_height:H+down_len, :] = down_mask
             return new_mask
+        
         #保证depolar极轴变换从多边形端点开始展开
         angle = 180/sides
 
@@ -392,47 +391,40 @@ class PanoImageHeightPad:
 
         # 图像上下扩展
         img_c = []
-        if Image_pad is None:
+        if image_pad is None:
             img_c = torch.zeros((1, size + size, size,  4), dtype=torch.float32)
             img_c[:, :size, :, :] = img_a
             img_c[:, size:, :, :] = img_b    
         else:
             # 图像上下扩展量
-            B, h_pad, w_pad, C = Image_pad.shape
+            B, h_pad, w_pad, C = image_pad.shape
             if C == 3:
-                Image_pad = add_alpha_channel(Image_pad)
+                image_pad = add_alpha_channel(image_pad)
 
             # 扩展相同的高度
             add_height = (w_pad//2 - height) // 2 
             if add_height < 0:
                 w_pad = height * 3
                 add_height = height//2
-                Image_pad = overlay_images(Image_pad, h_pad, w_pad)
+                image_pad = overlay_images(image_pad, h_pad, w_pad)
                 
             h_out = h_pad + add_height
             pad_out = h_out + add_height
 
-            img_c = torch.zeros((B, pad_out, w_pad,  4), dtype=torch.float32)
+            img_c = torch.zeros((B, pad_out, w_pad, 4), dtype=torch.float32)
             img_src = img_c.clone()
 
             # 生成mask
-            width_mask = w_pad//sides
-            img_mask = ImageContainer(width_mask, h_pad, 255, 255, 255, 1.0)
-            img_mask = plane_to_cylinder(input_image=img_mask, fov=fov)
-
-            # 计算为1的长度,计算地X=1时候垂直像素Y的长度               
-            first_column = img_mask[0, :, 1, -1] > 0
-            add_len = MUT8((pad_out - torch.sum(first_column)) / 2)
-
-            add_len_up = int(add_len * scale_up)
-            add_len_down = int(add_len * scale_down)
+            add_len = MUT8(add_height * (1.5-fov/360))
+            add_len_up = MUT8(add_len * scale_up)
+            add_len_down = MUT8(add_len * scale_down)
 
             # 向上扩展图像
             img_a = depolar_transform(
                 input_tensor=img_a,
                 output_size=(w_pad, add_len_up),
                 angle=angle,
-                exponent = exponent,
+                exponent = depolar,
             )
             img_src[:, :add_len_up, :, :] = img_a
 
@@ -441,13 +433,13 @@ class PanoImageHeightPad:
                 input_tensor=img_b,
                 output_size=(w_pad, add_len_down),
                 angle=angle,
-                exponent = exponent,
+                exponent = depolar,
             )
             img_b = ImageTransformTranspose(img_b, method='flip_vertically')
             img_src[:, pad_out-add_len_down:, :, :] = img_b 
 
             # 图像遮罩复合
-            img_c[:, add_height:h_out, :, :] = Image_pad
+            img_c[:, add_height:h_out, :, :] = image_pad
 
             # 遮罩合成
             mask = img_c[:, :, :, -1]
@@ -455,8 +447,9 @@ class PanoImageHeightPad:
             mask = 1.0 - mask
 
             img_c = image_mask_composite(img_c, img_src, 0, 0, mask)
+            mask = img_c[:, :, :, -1]
 
-        return (pano_pipe, img_c, img_a, img_b)
+        return (pano_pipe, img_c, mask)
 
 class PanoImageWightPad:
     def __init__(self):
@@ -472,19 +465,19 @@ class PanoImageWightPad:
                 "fit": ("BOOLEAN", {"default": True, "label_on": "true", "label_off": "false"}),
             },
             "optional": {
-                "Image_pad": ("IMAGE",),
+                "image_pad": ("IMAGE",),
                 "image": ("IMAGE",),
             }
         }
 
     RETURN_TYPES = ("PANO_PIPE", "IMAGE", "IMAGE")
-    RETURN_NAMES = ("pano_pipe", "Image_pad", "image")
+    RETURN_NAMES = ("pano_pipe", "image_pad", "image")
     FUNCTION = "node"
 
     def node(self, 
              pano_pipe,
              fit,
-             Image_pad = None,
+             image_pad = None,
              image = None
              ):
         
@@ -514,22 +507,22 @@ class PanoImageWightPad:
         img_c = []
 
         # 图像右扩
-        if Image_pad is not None:     
+        if image_pad is not None:     
             # 图像向右扩展量
-            B, h_pad, w_pad, C = Image_pad.shape
+            B, h_pad, w_pad, C = image_pad.shape
             if C == 3:
-                Image_pad = add_alpha_channel(Image_pad)
+                image_pad = add_alpha_channel(image_pad)
 
             if h_pad != height:
-                Image_pad = ImageTransformResizeClip(Image_pad, w_pad, height, 64, 64, method='lanczos')
+                image_pad = ImageTransformResizeClip(image_pad, w_pad, height, 64, 64, method='lanczos')
                 
             # 设置输出图像的尺寸
-            B, h_pad, w_pad, C = Image_pad.shape
+            B, h_pad, w_pad, C = image_pad.shape
             w_out = w_pad + width
             img_c = torch.zeros((B, h_pad, w_out, 4), dtype=torch.float32)
        
             # 图像右扩
-            img_c[:, :, :w_pad, :] = Image_pad
+            img_c[:, :, :w_pad, :] = image_pad
             img_c[:, :, w_pad:, :] = img_b
 
         else:
@@ -1073,12 +1066,10 @@ class PanoFaceToLong:
             },
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("long",)
+    RETURN_TYPES = ("IMAGE","MASK")
+    RETURN_NAMES = ("long","long_mask")
     FUNCTION = "node"
     def node(self, face):
-
-        print("face",face.shape)
         B, H, W, C = face.shape
         if W != H:
             raise ValueError("输入的宽高必须相等")
@@ -1093,9 +1084,11 @@ class PanoFaceToLong:
 
         for i in range(6):
             long_image[0, :, i*H:(i+1)*H, :] = face[i]
+
+        mask = long_image[:, :, :, -1]
         
         # 返回结果
-        return (long_image,)
+        return (long_image, mask)
 
 class PanoMaskOutClamp:
     def __init__(self):
@@ -1228,7 +1221,7 @@ class PanoDenseDiffCondBatch:
             }
         }
     RETURN_TYPES = ("CONDITIONING","CONDITIONING","CONDITIONING","CONDITIONING")
-    RETURN_NAMES = ("cond_struct","cond_mix","cond_face","cond_total")
+    RETURN_NAMES = ("cond_mix","cond_face","cond_total","cond_mask")
     FUNCTION = "encode"
 
     def encode(self, 
@@ -1286,12 +1279,14 @@ class PanoDenseDiffCondBatch:
                 repeat_times = max_num_tokens // current_num_tokens + 1
                 repeated_tokens = conds[i].repeat(1, repeat_times, 1)
                 conds[i] = repeated_tokens[:, :max_num_tokens, :]
-                print(conds[i].shape[1])
 
         # 填充totol token
         padding_size = max_num_tokens - t_cond.shape[1]
         if padding_size > 0:
-            padding = torch.zeros((1, padding_size, t_cond.shape[2]), dtype=t_cond.dtype, device=t_cond.device)
+            padding = torch.zeros(
+                (1, padding_size, t_cond.shape[2]), 
+                dtype=t_cond.dtype,
+                device=t_cond.device)       
             t_cond = torch.cat((t_cond, padding), dim=1)
 
         b_conds = torch.cat(conds)
@@ -1338,10 +1333,9 @@ class PanoDenseDiffCondBatch:
         else:
             conditioning = [(t_conds, {"pooled_output": t_pooleds})]
             
-        return (conditioning,
-                [(t_conds, {"pooled_output": t_pooleds})],
+        return ([(t_conds, {"pooled_output": t_pooleds})],
                 [(b_conds, {"pooled_output": b_pooleds})],
-                conditioning_total)
+                conditioning_total, conditioning)
     
 
 class PanoClipBatch:
@@ -1364,8 +1358,7 @@ class PanoClipBatch:
     RETURN_NAMES = ("cond_face",)
     FUNCTION = "encode"
 
-    def encode(self, clip, prefix, front, right, back, left, up, down):
-       
+    def encode(self, clip, prefix, front, right, back, left, up, down):  
         conds = []
         pooleds = []
         num_tokens = []
@@ -1386,13 +1379,6 @@ class PanoClipBatch:
 
         # 找到最大的 token 数量
         max_num_tokens = max(num_tokens)
-        # # 填充face token
-        # for i in range(len(conds)):
-        #     current_num_tokens = num_tokens[i]
-        #     if current_num_tokens < max_num_tokens:
-        #         padding_size = max_num_tokens - current_num_tokens
-        #         padding = torch.zeros_like(conds[i][:, :padding_size])
-        #         conds[i] = torch.cat((conds[i], padding), dim=1)
 
         # 修改padding的生成方式：
         for i in range(len(conds)):
@@ -1468,8 +1454,6 @@ class PanoPromptSplit:
                                 result_list[i] = match[1]
                                 matched_indices.add(j)  # 标记当前 match 已匹配
                                 break  # 找到匹配后跳出内层循环
-   
-            
             else:
                 # 如果第一次匹配未找到六项，按换行符分割字符串并逐行匹配
                 lines = input_string.splitlines()

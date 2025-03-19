@@ -4,8 +4,21 @@ import torch
 from .distort import plane_to_equirect
 from .misc import *
 import math
-import nodes
+import cv2
 
+def bitwise_and_masks(mask1, mask2):
+    mask1 = mask1.cpu()
+    mask2 = mask2.cpu()
+    cv2_mask1 = np.array(mask1)
+    cv2_mask2 = np.array(mask2)
+
+    if cv2_mask1.shape == cv2_mask2.shape:
+        cv2_mask = cv2.bitwise_and(cv2_mask1, cv2_mask2)
+        return torch.from_numpy(cv2_mask)
+    else:
+        # do nothing - incompatible mask shape: mostly empty mask
+        print("incompatible mask shape: mostly empty mask")
+        return mask1
 def calculate_equ_heght(heght):
     # 计算 sqrt(x * x * 3)
     result = math.sqrt(heght * heght * 3)
@@ -166,11 +179,12 @@ class PanoImageCube2Equ:
                 result = add_alpha_channel(result)
 
             if mask_split:
-                funmaskand = nodes.NODE_CLASS_MAPPINGS['BitwiseAndMask']()
                 mask = result[:, :, :, 3]
-                mask_a = [1.0 - mask] * 6
+                mask_a = 1.0 - mask.squeeze(0) 
+                mask_a = [mask_a] * 6
                 mask_a = torch.stack(mask_a, dim=0)
-                masks = funmaskand(mask_a, masks)
+                print(mask_a.shape, masks.shape)
+                masks = bitwise_and_masks(mask_a, masks)
 
             masks = masks.unsqueeze(0)
 
@@ -197,17 +211,16 @@ class PanoImageEqu2Cube:
                     "min": 0,
                     "step": 8
                 }),
-                "order": (["nearest", "bilinear"],),
             },
         }
 
-    RETURN_TYPES = ("IMAGE","IMAGE","MASK")
-    RETURN_NAMES = ("face","long","long_mask")
-    OUTPUT_IS_LIST = (True, False, False)
+    RETURN_TYPES = ("IMAGE","MASK")
+    RETURN_NAMES = ("face","face_mask")
+    OUTPUT_IS_LIST = (True, True)
     FUNCTION = "node"
 
-    def node(self, equ, height, order):
-
+    def node(self, equ, height):
+        order = "nearest"
         image = equ
         sub_height, sub_width = image.shape[1], image.shape[2]
 
@@ -242,13 +255,11 @@ class PanoImageEqu2Cube:
         # 添加alpha通道
         if face.shape[-1] == 3:
             face = add_alpha_channel(face)
-        if long_image.shape[-1] == 3:
-            long_image = add_alpha_channel(long_image)
 
         # 简单生成MASK
-        mask = long_image[:, :, :, 3]
+        mask = face[:, :, :, :, -1]
 
-        return (face, long_image, mask)
+        return (face, mask)
 
 def calculate_vfov(hfov, width, height):
     # 将水平视场角从度转换为弧度
