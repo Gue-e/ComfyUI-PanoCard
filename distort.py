@@ -287,7 +287,6 @@ def plane_to_cylinder(
         right = right[0].item()
         top = top[0].item()
         bottom = bottom[0].item()
-        print(f"裁剪范围：左={left}, 右={right}, 上={top}, 下={bottom}")
 
         # 执行双方向裁剪
         output = output[:, top:bottom+1, left:right+1, :]
@@ -498,3 +497,65 @@ def arc_distortion(image, stretch_factor=0.5):
     output[..., 3:4] = torch.clamp(output[..., 3:4], 0, 1)
     
     return output
+
+def concave_distortion(
+    input_tensor: torch.Tensor,
+    intensity: float = 0.5,
+    background_color: tuple = (0, 0, 0, 0),
+    device: torch.device = None
+) -> torch.Tensor:
+    """
+    改进的凹陷变换函数，支持批次处理及透明通道
+    :param input_tensor: 输入图像张量 [B, H, W, C]
+    :param intensity: 凹陷强度 (0-1)，正值凹陷，负值凸起
+    :param background_color: 背景RGBA颜色 (0-255)
+    :param device: 指定计算设备
+    :return: 变换后的图像 [B, H, W, C]
+    """
+    if device is None:
+        device = input_tensor.device
+    
+    # 确保输入格式正确
+    assert input_tensor.dim() == 4, "输入必须是4维张量 [B, H, W, C]"
+    B, H, W, C = input_tensor.shape
+    
+    # 添加alpha通道
+    if C == 3:
+        alpha = torch.ones((B, H, W, 1), device=device)
+        input_img = torch.cat([input_tensor, alpha], dim=-1)
+    else:
+        input_img = input_tensor.clone()
+    
+    # 转换为grid_sample需要的格式 [B, C, H, W]
+    input_img = input_img.permute(0, 3, 1, 2).to(device)
+    
+    # 生成归一化网格 [-1, 1]
+    xx = torch.linspace(-1, 1, W, device=device)
+    yy = torch.linspace(-1, 1, H, device=device)
+    gy, gx = torch.meshgrid(yy, xx, indexing='ij')  # [H, W]
+    
+    # 计算径向变形
+    radius = torch.sqrt(gx**2 + gy**2) / np.sqrt(2)  # 归一化到[0,1]
+    distortion = intensity * (1 - radius**3)         # 三次方曲线
+    new_gx = gx * (1 + distortion)
+    new_gy = gy * (1 + distortion)
+    
+    # 构建采样网格 [B, H, W, 2]
+    grid = torch.stack([new_gx, new_gy], dim=-1).unsqueeze(0).repeat(B, 1, 1, 1)
+    
+    # 执行采样
+    sampled = F.grid_sample(
+        input_img,
+        grid,
+        mode='bilinear',
+        padding_mode='zeros',
+        align_corners=True
+    )  # [B, C, H, W]
+    
+    # 处理背景颜色
+    bg_color = torch.tensor(background_color, dtype=torch.float32, device=device).view(1, 4, 1, 1) / 255.0
+    alpha = sampled[:, 3:4, :, :]  # 获取alpha通道
+    output = sampled[:, :4, :, :] * alpha + bg_color * (1 - alpha)
+    
+    # 转换回原始格式 [B, H, W, C]
+    return output.permute(0, 2, 3, 1)

@@ -58,7 +58,7 @@ class PanoImageCube2Equ:
                     "min": 0,
                     "step": 8
                 }),
-                "scale": ("FLOAT", {
+                "mask_scale": ("FLOAT", {
                     "default": 0,
                     "max": 1.0,
                     "min": 0,
@@ -73,12 +73,13 @@ class PanoImageCube2Equ:
         }
 
     RETURN_TYPES = ("IMAGE","MASK","MASK")
-    RETURN_NAMES = ("equ","mask","masks")
+    RETURN_NAMES = ("equ","equ_mask","equ_masks")
     OUTPUT_IS_LIST = (False, False, True)
     FUNCTION = "node"
 
-    def node(self, height, scale, mask_split, face = None, long = None):
+    def node(self, height, mask_scale, mask_split, face = None, long = None):
         sub_height = 0
+        scale = mask_scale
         result = np.array([])
         order = "nearest"
         if long is not None:

@@ -361,8 +361,9 @@ class PanoImageHeightPad:
                 new_mask[:, :half_height, :] = up_mask
             else:
                 if up_len > 0:
-                    up_mask = mask[:, up_len:half_height+up_len, :]
-                    new_mask[:, :half_height, :] = up_mask
+                    up_mask = mask[:, up_len:half_height, :]
+                    new_mask[:, :half_height-up_len, :] = up_mask
+                    new_mask[:, half_height-up_len:half_height, :] = 1.0
                 else:
                     up_mask = mask[:, :half_height+up_len, :] 
                     new_mask[:, -up_len:half_height, :] = up_mask
@@ -373,8 +374,9 @@ class PanoImageHeightPad:
                 new_mask[:, half_height:, :] = down_mask
             else:
                 if down_len > 0:
-                    down_mask = mask[:, half_height-down_len:H-down_len, :]
-                    new_mask[:, half_height:, :] = down_mask
+                    down_mask = mask[:, half_height:H-down_len, :]
+                    new_mask[:, half_height+down_len:, :] = down_mask
+                    new_mask[:, half_height:half_height+down_len, :] = 1.0
                 else:
                     down_mask = mask[:, half_height-down_len:, :]
                     new_mask[:, half_height:H+down_len, :] = down_mask
@@ -451,7 +453,7 @@ class PanoImageHeightPad:
 
         return (pano_pipe, img_c, mask)
 
-class PanoImageWightPad:
+class PanoImageWidthPad:
     def __init__(self):
         pass
 
@@ -744,7 +746,7 @@ class PanoImageAdjust:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "method": (["none", "alpha_remove", "scale", 
+                "method": (["none", "alpha_remove", 
                             "scale", "scale_height", "scale_width", 
                             "pad_height","pad_width","pad_edge",
                             "stretch", "stretch_pano","stretch_arc",
@@ -1198,7 +1200,7 @@ class PanoImageOutClamp:
         return (images_list[0],images_list[1],images_list[2],images_list[3],images_list[4],images_list[5])
 
 
-class PanoDenseDiffCondBatch:
+class PanoMaskCondBatch:
     CATEGORY = "PanoCard/conditioning"
     @classmethod
     def INPUT_TYPES(s):
@@ -1238,7 +1240,7 @@ class PanoDenseDiffCondBatch:
         strength_total = 2.001 - strength_face
 
         #全局编码
-        tokens = clip.tokenize(total)
+        tokens = clip.tokenize(total + prefix)
         t_cond, t_pooled = clip.encode_from_tokens(tokens, return_pooled=True)
         conditioning_total = [(t_cond, {"pooled_output": t_pooled})]
 
@@ -1426,14 +1428,14 @@ class PanoPromptSplit:
             result_list = [""] * 8
 
             # 定义一个元组列表，用于存储匹配到的字符串,模糊匹配
-            keys_list = [("prefix", "same", "0"),
-                        ("front", "east", "1"),
-                        ("right", "south", "2"),
-                        ("back", "west", "3"),
-                        ("left", "north", "4"),
+            keys_list = [("prefix", "Prefix", "0"),
+                        ("front", "Front", "1"),
+                        ("right", "Right", "2"),
+                        ("back", "Back", "3"),
+                        ("left", "Left", "4"),
                         ("up", "Up", "5"),
                         ("down", "Down", "6"),
-                        ("total", "all", "7")]
+                        ("total", "Total", "7")]
 
             # 第一次尝试匹配整个字符串
             matches = re.findall(pattern, input_string, re.DOTALL)
@@ -1500,7 +1502,6 @@ class PanoRegionalPrompt:
                 "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
                 "sampler_name": (comfy.samplers.KSampler.SAMPLERS,),
                 "scheduler": (SCHEDULERS,),
-                "controlnet_in_pipe": ("BOOLEAN", {"default": False, "label_on": "Keep", "label_off": "Override"}),
                 "sigma_factor": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
             },
             "optional": {
@@ -1511,38 +1512,23 @@ class PanoRegionalPrompt:
             }
         }
 
-    RETURN_TYPES = ("REGIONAL_PROMPTS", )
+    RETURN_TYPES = ("KSAMPLER_ADVANCED","REGIONAL_PROMPTS")
+    RETURN_NAMES = ("sampler", "prompts")
     FUNCTION = "doit"
 
     @staticmethod
     def doit(basic_pipe, cond_face, masks, cfg, sampler_name, scheduler, 
-             controlnet_in_pipe=False, sigma_factor=1.0, variation_seed=0, variation_strength=0.0, variation_method="linear", scheduler_func_opt=None):
-        def rdoit(basic_pipe, mask, cfg, sampler_name, scheduler, 
-                controlnet_in_pipe=False, sigma_factor=1.0, variation_seed=0, variation_strength=0.0, variation_method='linear', scheduler_func_opt=None):
-            if 'RegionalPrompt' not in nodes.NODE_CLASS_MAPPINGS:
-                raise Exception(f"[ERROR] To use RegionalPromptSimple, you need to install 'ComfyUI-Impact-Pack'")
-
-            kap = nodes.NODE_CLASS_MAPPINGS['KSamplerAdvancedProvider']()
-            rp = nodes.NODE_CLASS_MAPPINGS['RegionalPrompt']()
-
-            sampler = kap.doit(cfg, sampler_name, scheduler, basic_pipe, sigma_factor=sigma_factor, scheduler_func_opt=scheduler_func_opt)[0]
-            try:
-                regional_prompts = rp.doit(mask, sampler, variation_seed=variation_seed, variation_strength=variation_strength, variation_method=variation_method)[0]
-            except:
-                raise Exception("[Inspire-Pack] ERROR: Impact Pack is outdated. Update Impact Pack to latest version to use this.")
-
-            return regional_prompts
-
-        print(f"Mask: {masks.shape}")
-        print(f"Mask: {len(cond_face[0][0])}")
-
+             sigma_factor=1.0, variation_seed=0, variation_strength=0.0, variation_method="linear", scheduler_func_opt=None):
+        
         if masks.shape[0] != 6:
             raise Exception("Mask shape must be 6")
         
-        # if len(cond_face) != 6:
-        #     raise Exception("Cond_face must be 6")
+
+        bkap = nodes.NODE_CLASS_MAPPINGS['KSamplerAdvancedProvider']()
+        base_sampler = bkap.doit(cfg, sampler_name, scheduler, basic_pipe, sigma_factor=sigma_factor, scheduler_func_opt=scheduler_func_opt)[0]
 
         res = []
+
         [b_conds, b_pooleds_dict] = cond_face[0]
         if "pooled_output" in b_pooleds_dict:
             b_pooleds = b_pooleds_dict["pooled_output"]
@@ -1553,13 +1539,27 @@ class PanoRegionalPrompt:
         pooleds = get_original_tensors(b_pooleds)
         
         model, clip, vae, positive, negative = basic_pipe
+        def rdoit(basic_pipe, mask, cfg, sampler_name, scheduler, 
+                sigma_factor=1.0, variation_seed=0, variation_strength=0.0, variation_method='linear', scheduler_func_opt=None):
+            if 'RegionalPrompt' not in nodes.NODE_CLASS_MAPPINGS:
+                raise Exception(f"[ERROR] To use RegionalPromptSimple, you need to install 'ComfyUI-Impact-Pack'")
+            
+            kap = nodes.NODE_CLASS_MAPPINGS['KSamplerAdvancedProvider']()
+            rp = nodes.NODE_CLASS_MAPPINGS['RegionalPrompt']()
 
+            sampler = kap.doit(cfg, sampler_name, scheduler, basic_pipe, sigma_factor=sigma_factor, scheduler_func_opt=scheduler_func_opt)[0]
+
+            try:
+                regional_prompts = rp.doit(mask, sampler, variation_seed=variation_seed, variation_strength=variation_strength, variation_method=variation_method)[0]
+            except:
+                raise Exception("[Inspire-Pack] ERROR: Impact Pack is outdated. Update Impact Pack to latest version to use this.")
+
+            return regional_prompts
+        
         for i, mask in enumerate(masks):
-
             positive =  [(conds[i], {"pooled_output": pooleds[i]})]
             pipe = model, clip, vae, positive, negative
             rp = rdoit(pipe, mask.unsqueeze(0), cfg, sampler_name, scheduler, 
-                    controlnet_in_pipe,
                     sigma_factor=sigma_factor, 
                     variation_seed=variation_seed, 
                     variation_strength=variation_strength, 
@@ -1567,7 +1567,7 @@ class PanoRegionalPrompt:
                     scheduler_func_opt=scheduler_func_opt)
             res += rp
             
-        return (res, )
+        return (base_sampler, res)
     
 
 
@@ -1578,14 +1578,14 @@ class PanoImageSplit:
         return {
             "required": {
                 "image": ("IMAGE", ),
-                "ratio": ("FLOAT", {"default": 0.0, "min": 0, "max": 1.0, "step": 0.01}),
+                "ratio": ("FLOAT", {"default": 0.25, "min": 0, "max": 1.0, "step": 0.01}),
                 "fov": ("FLOAT", {"default": 0.0, "min": -179.0, "max": 179.0, "step": 0.1}),
                 "resize": ("BOOLEAN", {"default": True, "label_on": "true", "label_off": "false"}),
             }
         }
     
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
+    RETURN_NAMES = ("face",)
     OUTPUT_IS_LIST = (True,)
     FUNCTION = "encode"
 
@@ -1593,7 +1593,6 @@ class PanoImageSplit:
 
         # 获取原图尺寸
         b, h, w, c = image.shape
-
         if c == 3:
             image = add_alpha_channel(image)
             c = 4
@@ -1608,7 +1607,6 @@ class PanoImageSplit:
             image = image_new
 
         b, h, w, c = image.shape
-
         ratio = 1.0 + ratio * 4
         
         # 计算 w1 和 w2
@@ -1617,13 +1615,10 @@ class PanoImageSplit:
 
         # 计算总面积
         total_area = h * w
-
         # 计算 k
         area_per = total_area / (2 * ratio + 4)
-        
         # 计算 area_1 和 area_2
         area_up = area_per * ratio
-
         # 计算 h1 和 h2
         h1 = int(area_per / w1)
         h2 = int(area_up / w2)
@@ -1631,7 +1626,6 @@ class PanoImageSplit:
 
         # 图像偏移
         image = torch.roll(image, shifts=-wo, dims=2)
-
         if fov > 0.1 or fov < -0.1:
             image_new = torch.zeros((b, h, w, c), dtype=image.dtype, device=image.device)
             for i in range(4):
@@ -1782,17 +1776,21 @@ class DetailerHook(PixelKSampleHook):
 
 
 class FaceCondScheduleHook(DetailerHook):
-    def __init__(self, cond, face_skip):
+    def __init__(self, cond, face_skip, seed):
         super().__init__()
         self.cond = cond
+        self.seed = seed
         self.face_skip = face_skip
     def pre_ksample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise):
-        index = seed % len(self.cond)
+        index = abs(seed - self.seed) % 6
+        if index == 0 and self.cond is None:
+            self.cond = DepackClip(positive)
+
         positive = self.cond[index]  
         if self.face_skip[index]:
             steps = 0
-        print("seed ",seed ,"step", index)
-        
+
+        print("index", index)
         return model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise
     
 class CondFaceScheduleHookProvider:
@@ -1800,24 +1798,31 @@ class CondFaceScheduleHookProvider:
 
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {
-                     "face_cond": ("CONDITIONING",),
-                     "face_1": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "face_2": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "face_3": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "face_4": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "face_5": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "face_6": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+        return {
+                "required": {
+                     "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                     "skip_face1": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+                     "skip_face2": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+                     "skip_face3": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+                     "skip_face4": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+                     "skip_face5": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+                     "skip_face6": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
                     },
+                    "optional": {
+                        "cond_face": ("CONDITIONING",),
+                    }
                 }
-
-    RETURN_TYPES = ("DETAILER_HOOK",)
+    RETURN_TYPES = ("DETAILER_HOOK","INT")
+    RETURN_NAMES = ("DetailerHook","seed")
     FUNCTION = "doit"
 
     CATEGORY = "PanoCard/conditioning"
 
-    def doit(self, face_cond, face_1, face_2, face_3, face_4, face_5, face_6):
-        face_skip = [face_1, face_2, face_3, face_4, face_5, face_6]
-        cond = DepackClip(face_cond)
-        hook = FaceCondScheduleHook(cond, face_skip)
-        return (hook, )
+    def doit(self, seed, skip_face1, skip_face2, skip_face3, skip_face4, skip_face5, skip_face6, cond_face=None ):
+        face_skip = [skip_face1, skip_face2, skip_face3, skip_face4, skip_face5, skip_face6]
+        if cond_face is None:
+            cond = None
+        else:
+            cond = DepackClip(cond_face)
+        hook = FaceCondScheduleHook(cond, face_skip, seed)
+        return (hook, seed)
