@@ -124,13 +124,65 @@ def DepackClip(cond_face):
     else:
         print("no guidance")
 
+    cnet_list = None
+    if 'pano_control' in b_pooleds_dict:
+        cnet_list = b_pooleds_dict["pano_control"]
+        print("has pano_control number:",len(cnet_list))
+    else:
+        print("no pano_control")
+
     for i in range(6):
         if key_pooleds > 0.0:
-            res.append([(conds[i], {"pooled_output": pooleds[i], "guidance": key_pooleds})])
+            cond_dict = {"pooled_output": pooleds[i], "guidance": key_pooleds}
         else:
-            res.append([(conds[i], {"pooled_output": pooleds[i]})])
+            cond_dict = {"pooled_output": pooleds[i]}
+
+        if cnet_list is not None:
+            if 'control' in cnet_list[i] and 'control_apply_to_uncond' in cnet_list[i]:
+                cond_dict['control'] = cnet_list[i]['control']
+                cond_dict['control_apply_to_uncond'] = cnet_list[i]['control_apply_to_uncond']
+
+        res.append([(conds[i], cond_dict)])
     return res
-    
+
+
+def pad_conditions(conds, num_tokens=0):
+    if len(conds) == 0:
+        return []
+
+    # 找到最大的 token 数量
+    if num_tokens > 0:
+        max_num_tokens = num_tokens
+    else:
+        max_num_tokens = max(tensor.shape[1] for tensor in conds)
+
+    # 创建一个新的列表来存储填充后的张量
+    padded_conds = []
+
+    for cond in conds:
+        current_num_tokens = cond.shape[1]
+        if current_num_tokens < max_num_tokens:
+            # 填充较短的张量
+            padding_size = max_num_tokens - current_num_tokens
+            # 创建填充张量
+            padding = torch.zeros(
+                (cond.shape[0], padding_size, cond.shape[2]),  # [batch_size, padding_size, token_dim]
+                dtype=cond.dtype,
+                device=cond.device
+            )
+            # 拼接原始张量和填充张量
+            padded_cond = torch.cat((cond, padding), dim=1)
+        elif current_num_tokens > max_num_tokens:
+            # 截断较长的张量
+            padded_cond = cond[:, :max_num_tokens, :]
+        else:
+            # 如果长度相同，直接使用原始张量
+            padded_cond = cond
+        
+        padded_conds.append(padded_cond)
+
+    return padded_conds
+
 class PanoViewer:
     @classmethod
     # 定义输入类型
@@ -1058,7 +1110,7 @@ class PanoFaceToLong:
     def __init__(self):
         pass
 
-    CATEGORY = "PanoCard/split"
+    CATEGORY = "PanoCard/convert"
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1200,6 +1252,8 @@ class PanoImageOutClamp:
         return (images_list[0],images_list[1],images_list[2],images_list[3],images_list[4],images_list[5])
 
 
+
+
 class PanoMaskCondBatch:
     CATEGORY = "PanoCard/conditioning"
     @classmethod
@@ -1207,7 +1261,8 @@ class PanoMaskCondBatch:
         return {
             "required": {
                 "clip": ("CLIP", ), 
-                "strength_face": ("FLOAT",{"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},),
+                "strength_mask": ("FLOAT",{"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},),
+                "combine_up_down": ("BOOLEAN", {"default": True, "label_on": "true", "label_off": "false"}),
                 "total": ("STRING", {"multiline": True}),
                 "prefix": ("STRING", {"multiline": True}),
                 "front": ("STRING", {"multiline": True}),
@@ -1222,13 +1277,14 @@ class PanoMaskCondBatch:
                 "cond_face": ("CONDITIONING",),
             }
         }
-    RETURN_TYPES = ("CONDITIONING","CONDITIONING","CONDITIONING","CONDITIONING")
-    RETURN_NAMES = ("cond_mix","cond_face","cond_total","cond_mask")
+    RETURN_TYPES = ("CONDITIONING","CONDITIONING","CONDITIONING","CONDITIONING","MASK")
+    RETURN_NAMES = ("cond_mix","cond_face","cond_total","cond_mask","masks")
     FUNCTION = "encode"
 
     def encode(self, 
                clip, 
-               strength_face,
+               strength_mask,
+               combine_up_down,
                total, 
                prefix, 
                front, right, back, left, up, down,
@@ -1236,28 +1292,29 @@ class PanoMaskCondBatch:
                ):
 
         #调整局部和整体的强度
-        strength_face  = strength_face * 2
-        strength_total = 2.001 - strength_face
+        strength_mask  = strength_mask
+        strength_total = 1.0 - strength_mask
 
         #全局编码
         tokens = clip.tokenize(total + prefix)
         t_cond, t_pooled = clip.encode_from_tokens(tokens, return_pooled=True)
         conditioning_total = [(t_cond, {"pooled_output": t_pooled})]
-
         num_tokens = []
         
         if cond_face is None:
             #局部编码
             conds = []
             pooleds = []
-            texts = [front,right,back,left,up,down]
+            if combine_up_down:
+                texts = [front,right,back,left,total,up+down]
+            else:
+                texts = [front,right,back,left,up,down]
             for i, text in enumerate(texts):
                 tokens = clip.tokenize(prefix + text)
                 cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
                 conds.append(cond)
                 pooleds.append(pooled)
                 num_tokens.append(cond.shape[1])
-
         else:
             # 解包外层列表
             [b_conds, face_pooled_dict] = cond_face[0]
@@ -1265,6 +1322,10 @@ class PanoMaskCondBatch:
             b_pooleds = face_pooled_dict["pooled_output"]
                    
             conds = get_original_tensors(b_conds)
+            if combine_up_down:
+                conds[5] = torch.cat((conds[4], conds[5]), 1)
+                conds[4] = t_cond
+                pooleds[4] = t_pooled
             pooleds = get_original_tensors(b_pooleds)
             num_tokens = [cond.shape[1] for cond in conds]
 
@@ -1272,54 +1333,42 @@ class PanoMaskCondBatch:
         num_tokens2 = num_tokens + [t_cond.shape[1]]
         max_num_tokens = max(num_tokens2)
 
-        # 重复截断填充face token
-        for i in range(len(conds)):
-            current_num_tokens = conds[i].shape[1]
-            if current_num_tokens > max_num_tokens:
-                conds[i] = conds[i][:, :max_num_tokens, :]
-            elif current_num_tokens < max_num_tokens:
-                repeat_times = max_num_tokens // current_num_tokens + 1
-                repeated_tokens = conds[i].repeat(1, repeat_times, 1)
-                conds[i] = repeated_tokens[:, :max_num_tokens, :]
-
-        # 填充totol token
-        padding_size = max_num_tokens - t_cond.shape[1]
-        if padding_size > 0:
-            padding = torch.zeros(
-                (1, padding_size, t_cond.shape[2]), 
-                dtype=t_cond.dtype,
-                device=t_cond.device)       
-            t_cond = torch.cat((t_cond, padding), dim=1)
-
+        # 填充face token
+        conds = pad_conditions(conds, max_num_tokens)
         b_conds = torch.cat(conds)
         b_pooleds = torch.cat(pooleds)
-        
-        # 将张量列表中的所有张量进行拼接
-        t_cond_scaled = [torch.mul(t_cond, strength_total)]
-        conds_scaled = [torch.mul(cond, strength_face) for cond in conds]
-        t_conds = torch.cat(t_cond_scaled + conds_scaled, dim=1)
+        conditioning_face = [(b_conds, {"pooled_output": b_pooleds})]
 
-        t_pooled_scaled = [torch.mul(t_pooled, strength_total)]
-        pooleds_scaled = [torch.mul(pooled, strength_face) for pooled in pooleds]
-        t_pooleds = torch.cat(t_pooled_scaled + pooleds_scaled, dim=0)
+        # 填充totol token
+        t_cond = pad_conditions([t_cond], max_num_tokens)[0]
+   
+        # 混合条件
+        conditioning_mix =  conditioning_total
+        for i in range(6):
+            face_conds = [(conds[i], {"pooled_output": pooleds[i]})]
+            conditioning_mix = nodes.ConditioningConcat().concat(conditioning_mix, face_conds)[0]
 
         # 计算遮罩合并
-        conditioning = []
+        conditioning_mask = []
         if masks is not None: 
             if masks.shape[0] != 6:
                 raise ValueError("The number of masks must be 6.")
 
-            mask_a = torch.ones_like(masks[0]).unsqueeze(0) 
+            mask_a = torch.ones_like(masks[0]).unsqueeze(0)
             print(mask_a.shape)
             
             t_conditioning = [(t_cond, {
                                         "pooled_output": t_pooled,
-                                        "mask": mask_a,
+                                        "mask": mask_a ,
                                         "set_area_to_bounds": False,
                                         "mask_strength": strength_total
                                         })]
-            conditioning = t_conditioning
-            
+            conditioning_mask = t_conditioning
+
+            if combine_up_down:
+                masks[5] = masks[4] + masks[5]
+                masks[4] = mask_a - (masks[0] + masks[1] + masks[2] + masks[3] + masks[5])
+
             for i in range(6):
                 mask_i = masks[i]
                 if len(mask_i.shape) < 3:
@@ -1329,15 +1378,20 @@ class PanoMaskCondBatch:
                                             "pooled_output": pooleds[i],
                                             "mask": mask_i,
                                             "set_area_to_bounds": False,
-                                            "mask_strength": strength_face
+                                            "mask_strength": strength_mask
                                             })]
-                conditioning += b_conditioning
+                conditioning_mask += b_conditioning
         else:
-            conditioning = [(t_conds, {"pooled_output": t_pooleds})]
-            
-        return ([(t_conds, {"pooled_output": t_pooleds})],
-                [(b_conds, {"pooled_output": b_pooleds})],
-                conditioning_total, conditioning)
+            conditioning_mask = conditioning_total
+            for i in range(6):
+                face_conds = [(conds[i], {"pooled_output": pooleds[i]})]
+                conditioning_mask = nodes.ConditioningCombine().combine(conditioning_mask, face_conds)[0]
+ 
+        return (conditioning_mix,
+                conditioning_face,
+                conditioning_total, 
+                conditioning_mask, 
+                masks)
     
 
 class PanoClipBatch:
@@ -1363,7 +1417,6 @@ class PanoClipBatch:
     def encode(self, clip, prefix, front, right, back, left, up, down):  
         conds = []
         pooleds = []
-        num_tokens = []
         front = prefix + front
         right = prefix + right
         back = prefix + back
@@ -1377,28 +1430,75 @@ class PanoClipBatch:
             cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
             conds.append(cond)
             pooleds.append(pooled)
-            num_tokens.append(cond.shape[1])
-
-        # 找到最大的 token 数量
-        max_num_tokens = max(num_tokens)
-
-        # 修改padding的生成方式：
-        for i in range(len(conds)):
-            current_num_tokens = num_tokens[i]
-            if current_num_tokens < max_num_tokens:
-                padding_size = max_num_tokens - current_num_tokens
-                # 修正padding创建方式
-                padding = torch.zeros(
-                    (1, padding_size, conds[i].shape[2]),  # [batch_size, padding_size, token_dim]
-                    dtype=conds[i].dtype,
-                    device=conds[i].device
-                )
-                conds[i] = torch.cat((conds[i], padding), dim=1)
-
+        
+        conds = pad_conditions(conds)
         b_conds = torch.cat(conds)
         b_pooleds = torch.cat(pooleds)
 
         return ([(b_conds, {"pooled_output": b_pooleds})],)
+
+
+class PanoCondClipClamp:
+    def __init__(self):
+        pass
+
+    CATEGORY = "PanoCard/conditioning"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "front": ("CONDITIONING",),        
+                "right": ("CONDITIONING",),
+                "back": ("CONDITIONING",),
+                "left": ("CONDITIONING",),
+                "up": ("CONDITIONING",),            
+                "down": ("CONDITIONING",),
+                "guidance": ("FLOAT", {"default": 3.5, "min": 0.0, "max": 100.0, "step": 0.1}),
+            },
+        }
+
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("cond_face",)
+    FUNCTION = "node"
+    def node(self, front, right, back, left, up, down, guidance):
+        # 将输入的图像转换为 PyTorch 的 Tensor
+        cond_list = [front, right, back, left, up, down]
+        cnet_list = []
+        conds = []
+        pooleds = []
+        for cond_face in cond_list:
+            if cond_face is not None: 
+                [c, t] = cond_face[0]
+                conds.append(c)
+                pooleds.append(t['pooled_output'])
+                if 'control' in t and 'control_apply_to_uncond' in t:
+                    cnet_dict = {
+                        'control': t['control'],
+                        'control_apply_to_uncond': t['control_apply_to_uncond']
+                    }
+                    cnet_list.append(cnet_dict)
+                else:
+                    cnet_list.append({})
+            else:
+                raise Exception("Error: The input is not a valid condition.")
+                
+        cond_face = pad_conditions(conds)
+        b_conds = torch.cat(cond_face)
+        b_pooleds = torch.cat(pooleds)
+
+        if len(cnet_list) > 0:
+            res_dict = {"pooled_output": b_pooleds, "pano_control": cnet_list}
+        else:
+            res_dict = {"pooled_output": b_pooleds}
+        
+        if guidance > 0:
+            res_dict["guidance_scale"] = guidance
+        
+        res = [(b_conds, res_dict)]
+
+        # 返回结果
+        return (res,)
 
 
 
@@ -1523,21 +1623,10 @@ class PanoRegionalPrompt:
         if masks.shape[0] != 6:
             raise Exception("Mask shape must be 6")
         
-
         bkap = nodes.NODE_CLASS_MAPPINGS['KSamplerAdvancedProvider']()
         base_sampler = bkap.doit(cfg, sampler_name, scheduler, basic_pipe, sigma_factor=sigma_factor, scheduler_func_opt=scheduler_func_opt)[0]
 
         res = []
-
-        [b_conds, b_pooleds_dict] = cond_face[0]
-        if "pooled_output" in b_pooleds_dict:
-            b_pooleds = b_pooleds_dict["pooled_output"]
-        else:
-            raise Exception("no pooled_output")
-        
-        conds = get_original_tensors(b_conds)
-        pooleds = get_original_tensors(b_pooleds)
-        
         model, clip, vae, positive, negative = basic_pipe
         def rdoit(basic_pipe, mask, cfg, sampler_name, scheduler, 
                 sigma_factor=1.0, variation_seed=0, variation_strength=0.0, variation_method='linear', scheduler_func_opt=None):
@@ -1546,9 +1635,7 @@ class PanoRegionalPrompt:
             
             kap = nodes.NODE_CLASS_MAPPINGS['KSamplerAdvancedProvider']()
             rp = nodes.NODE_CLASS_MAPPINGS['RegionalPrompt']()
-
             sampler = kap.doit(cfg, sampler_name, scheduler, basic_pipe, sigma_factor=sigma_factor, scheduler_func_opt=scheduler_func_opt)[0]
-
             try:
                 regional_prompts = rp.doit(mask, sampler, variation_seed=variation_seed, variation_strength=variation_strength, variation_method=variation_method)[0]
             except:
@@ -1556,8 +1643,10 @@ class PanoRegionalPrompt:
 
             return regional_prompts
         
+        conds = DepackClip(cond_face)
+
         for i, mask in enumerate(masks):
-            positive =  [(conds[i], {"pooled_output": pooleds[i]})]
+            positive = conds[i]
             pipe = model, clip, vae, positive, negative
             rp = rdoit(pipe, mask.unsqueeze(0), cfg, sampler_name, scheduler, 
                     sigma_factor=sigma_factor, 
@@ -1705,7 +1794,7 @@ class PanoImageSplit:
         return (images,)
 
 class PanoClipOutClamp:
-    CATEGORY = "PanoCard/split"
+    CATEGORY = "PanoCard/conditioning"
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -1776,21 +1865,23 @@ class DetailerHook(PixelKSampleHook):
 
 
 class FaceCondScheduleHook(DetailerHook):
-    def __init__(self, cond, face_skip, seed):
+    def __init__(self, cond, face_niose, seed):
         super().__init__()
         self.cond = cond
         self.seed = seed
-        self.face_skip = face_skip
+        self.face_niose = face_niose
     def pre_ksample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise):
         index = abs(seed - self.seed) % 6
         if index == 0 and self.cond is None:
             self.cond = DepackClip(positive)
 
         positive = self.cond[index]  
-        if self.face_skip[index]:
+        if self.face_niose[index] < 0.1:
             steps = 0
-
-        print("index", index)
+            denoise = 0
+        else:
+            denoise = self.face_niose[index]
+        print("index:", index, " denoise:",denoise)
         return model, seed, steps, cfg, sampler_name, scheduler, positive, negative, latent, denoise
     
 class CondFaceScheduleHookProvider:
@@ -1801,12 +1892,12 @@ class CondFaceScheduleHookProvider:
         return {
                 "required": {
                      "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-                     "skip_face1": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "skip_face2": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "skip_face3": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "skip_face4": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "skip_face5": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
-                     "skip_face6": ("BOOLEAN", {"default": False,"label_on": "ture", "label_off": "false"}),
+                     "niose_face1": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                     "niose_face2": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                     "niose_face3": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                     "niose_face4": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                     "niose_face5": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                     "niose_face6": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
                     },
                     "optional": {
                         "cond_face": ("CONDITIONING",),
@@ -1818,11 +1909,11 @@ class CondFaceScheduleHookProvider:
 
     CATEGORY = "PanoCard/conditioning"
 
-    def doit(self, seed, skip_face1, skip_face2, skip_face3, skip_face4, skip_face5, skip_face6, cond_face=None ):
-        face_skip = [skip_face1, skip_face2, skip_face3, skip_face4, skip_face5, skip_face6]
+    def doit(self, seed, niose_face1, niose_face2, niose_face3, niose_face4, niose_face5, niose_face6, cond_face=None ):
+        face_niose = [niose_face1, niose_face2, niose_face3, niose_face4, niose_face5, niose_face6]
         if cond_face is None:
             cond = None
         else:
             cond = DepackClip(cond_face)
-        hook = FaceCondScheduleHook(cond, face_skip, seed)
+        hook = FaceCondScheduleHook(cond, face_niose, seed)
         return (hook, seed)

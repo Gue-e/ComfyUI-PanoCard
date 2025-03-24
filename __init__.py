@@ -21,6 +21,7 @@ NODE_CLASS_MAPPINGS = {
     "PanoImageRoll": PanoImageRoll,
     "PanoCondAllBatch":PanoMaskCondBatch,
     "PanoCondFaceBatch":PanoClipBatch,
+    "PanoCondFaceClamp":PanoCondClipClamp,
     "PanoPromptSplit":PanoPromptSplit,
     "PanoRegionalPrompt":PanoRegionalPrompt,
     "PanoImage2FaceSplit":PanoImageSplit,
