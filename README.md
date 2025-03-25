@@ -25,7 +25,7 @@ A plugin application that utilizes ComfyUI to generate 360-degree panoramic imag
 
 ## 反馈交流
 - 如果有使用上的问题、建议、Bug等，可以通过抖音(抖音号：ycmiyesic)，或者加我V：beliveWeC
-- 如果需要VR全景后台可以联系我
+- 如果需要商业化展示你生成的全景图可以联系我，我能提供全景后台
 
 ## 参考链接
 - Pano查看器参考：https://github.com/gokayfem/ComfyUI-Dream-Interpreter
