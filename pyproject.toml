@@ -1,5 +1,5 @@
 [project]
-name = "PanoCard"
+name = "panocard"
 description = "A plugin application that utilizes ComfyUI to generate 360-degree panoramic images. It primarily works by converting between flat images and equidistant cylindrical projections, stretching flat images into a curved format, and setting regional conditions, while harnessing the power of large models to produce 360-degree panoramic views."
 version = "1.0.0"
 license = {file = "LICENSE"}
@@ -10,6 +10,6 @@ Repository = "https://github.com/Gue-e/ComfyUI-PanoCard"
 #  Used by Comfy Registry https://comfyregistry.org
 
 [tool.comfy]
-PublisherId = "Gue"
+PublisherId = "gue"
 DisplayName = "ComfyUI-PanoCard"
 Icon = ""
