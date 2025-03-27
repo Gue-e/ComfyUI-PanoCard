@@ -1878,7 +1878,6 @@ class FaceCondScheduleHook(DetailerHook):
         positive = self.cond[index]  
         if self.face_niose[index] < 0.1:
             steps = 0
-            denoise = 0
         else:
             denoise = self.face_niose[index]
         print("index:", index, " denoise:",denoise)
