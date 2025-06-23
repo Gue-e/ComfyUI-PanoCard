@@ -17,8 +17,20 @@ import torchvision.transforms.functional as TF
 import sys
 from os import path
 
+# 添加父目录到模块搜索路径
 sys.path.insert(0, path.dirname(__file__))
 from folder_paths import get_save_image_path, get_output_directory
+
+# 获取当前文件所在目录的父目录（即 custom_nodes 目录）
+parent_dir = path.abspath(path.join(path.dirname(__file__), '..'))
+
+# 手动添加 Impact Pack 的路径
+impact_pack_path = path.join(parent_dir, 'comfyui-impact-pack')
+if impact_pack_path not in sys.path:
+    sys.path.append(impact_pack_path)
+
+# 导入DetailerHook
+from modules.impact.hooks import DetailerHook
 
 def conditioning_set_values(conditioning, values={}):
     c = []
@@ -1816,52 +1828,6 @@ class PanoClipOutClamp:
                 res[3],
                 res[4],
                 res[5])
-
-
-class PixelKSampleHook:
-    cur_step = 0
-    total_step = 0
-
-    def __init__(self):
-        pass
-
-    def set_steps(self, info):
-        self.cur_step, self.total_step = info
-
-    def post_decode(self, pixels):
-        return pixels
-
-    def post_upscale(self, pixels):
-        return pixels
-
-    def post_encode(self, samples):
-        return samples
-
-    def pre_decode(self, samples):
-        return samples
-
-    def pre_ksample(self, model, seed, steps, cfg, sampler_name, scheduler, positive, negative, upscaled_latent,
-                    denoise):
-        return model, seed, steps, cfg, sampler_name, scheduler, positive, negative, upscaled_latent, denoise
-
-    def post_crop_region(self, w, h, item_bbox, crop_region):
-        return crop_region
-
-    def touch_scaled_size(self, w, h):
-        return w, h
-
-class DetailerHook(PixelKSampleHook):
-    def cycle_latent(self, latent):
-        return latent
-
-    def post_detection(self, segs):
-        return segs
-
-    def post_paste(self, image):
-        return image
-
-    def get_custom_noise(self, seed, noise, is_touched):
-        return noise, is_touched
 
 
 class FaceCondScheduleHook(DetailerHook):
