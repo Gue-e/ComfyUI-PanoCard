@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-PanoCard"
 description = "A plugin application that utilizes ComfyUI to generate 360-degree panoramic images. It primarily works by converting between flat images and equidistant cylindrical projections, stretching flat images into a curved format, and setting regional conditions, while harnessing the power of large models to produce 360-degree panoramic views."
-version = "1.0.1"
+version = "1.0.2"
 license = {file = "LICENSE"}
 dependencies = ["pyequilib", "opencv-python-headless"]
 
