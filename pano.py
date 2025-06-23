@@ -15,7 +15,7 @@ import torch
 import torchvision.transforms.functional as TF
 
 import sys
-from os import path
+from os import path, listdir
 
 # 添加父目录到模块搜索路径
 sys.path.insert(0, path.dirname(__file__))
@@ -25,9 +25,18 @@ from folder_paths import get_save_image_path, get_output_directory
 parent_dir = path.abspath(path.join(path.dirname(__file__), '..'))
 
 # 手动添加 Impact Pack 的路径
-impact_pack_path = path.join(parent_dir, 'comfyui-impact-pack')
-if impact_pack_path not in sys.path:
-    sys.path.append(impact_pack_path)
+target_folder_name = 'comfyui-impact-pack'
+for name in listdir(parent_dir):
+    if name.lower() == target_folder_name.lower():
+        impact_pack_path = path.join(parent_dir, name)
+        if impact_pack_path not in sys.path:
+            sys.path.append(impact_pack_path)
+        impact_modules_path = path.join(impact_pack_path, "modules")
+        if impact_modules_path not in sys.path:
+            sys.path.append(impact_modules_path)
+        break
+else:
+    raise FileNotFoundError("ComfyUI-Impact-Pack is required")
 
 # 导入DetailerHook
 from modules.impact.hooks import DetailerHook
